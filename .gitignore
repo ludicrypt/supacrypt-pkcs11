@@ -1,0 +1,58 @@
+# Build artifacts
+build/
+*.o
+*.obj
+*.so
+*.dll
+*.dylib
+*.a
+*.lib
+*.exe
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+!CMakeLists.txt
+
+# Generated files
+*.pb.cc
+*.pb.h
+*_grpc.pb.cc
+*_grpc.pb.h
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Backup files
+*~
+*.bak
+
+# Credential files
+*.key
+*.pem
+*.pfx
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+
+# Debug files
+*.pdb
+*.ilk
+
+# Compiler-specific
+*.gch
+*.pch

@@ -1,0 +1,26 @@
+name: Build and Test
+on: [push, pull_request]
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          # Platform-specific dependency installation to be added
+          echo "Install dependencies placeholder"
+      - name: Configure build
+        run: |
+          # CMake configure steps to be added
+          echo "Configure build placeholder"
+      - name: Build
+        run: |
+          # CMake build steps to be added
+          echo "Build steps placeholder"
+      - name: Test
+        run: |
+          # Test execution steps to be added
+          echo "Test steps placeholder"
