@@ -32,6 +32,7 @@ include(CMakePackageConfigHelpers)
 include(Dependencies)
 include(CompilerOptions)
 include(Platform)
+include(ProtoGeneration)
 
 # Create main library target
 add_library(supacrypt-pkcs11)

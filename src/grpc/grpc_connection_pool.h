@@ -22,12 +22,10 @@ namespace grpc {
     enum StatusCode : int;
 }
 
-// Forward declaration of protobuf service stub
-namespace supacrypt {
-namespace v1 {
-    class SupacryptService;
-}
-}
+// Include generated protobuf headers
+#include "supacrypt.grpc.pb.h"
+#include "circuit_breaker.h"
+#include "../utils/error_mapping.h"
 
 namespace supacrypt {
 namespace pkcs11 {
@@ -80,15 +78,15 @@ public:
 
     /**
      * @brief Get a connection from the pool
-     * @return Shared pointer to service stub
+     * @return Raw pointer to service stub (must be returned)
      */
-    std::shared_ptr<supacrypt::v1::SupacryptService::Stub> getConnection();
+    supacrypt::v1::SupacryptService::Stub* borrowConnection();
 
     /**
      * @brief Return a connection to the pool
      * @param stub Service stub to return
      */
-    void returnConnection(std::shared_ptr<supacrypt::v1::SupacryptService::Stub> stub);
+    void returnConnection(supacrypt::v1::SupacryptService::Stub* stub);
 
     /**
      * @brief Execute RPC with retry logic
@@ -122,6 +120,7 @@ private:
     supacrypt_config_t config_{};
     bool initialized_ = false;
     static constexpr size_t DEFAULT_POOL_SIZE = 4;
+    CircuitBreaker circuitBreaker_;
 
     /**
      * @brief Create a secure gRPC channel
@@ -178,8 +177,14 @@ CK_RV GrpcConnectionPool::executeRpc(
         return CKR_CRYPTOKI_NOT_INITIALIZED;
     }
 
-    auto stub = getConnection();
+    // Check circuit breaker
+    if (!circuitBreaker_.allowRequest()) {
+        return CKR_DEVICE_ERROR;
+    }
+
+    auto stub = borrowConnection();
     if (!stub) {
+        circuitBreaker_.recordFailure();
         return CKR_DEVICE_ERROR;
     }
 
@@ -197,18 +202,20 @@ CK_RV GrpcConnectionPool::executeRpc(
         context.AddMetadata("x-operation-name", operationName);
         
         // Execute RPC
-        grpc::Status status = rpcCall(stub.get(), &context, request, &response);
+        grpc::Status status = rpcCall(stub, &context, request, &response);
         
         if (status.ok()) {
+            circuitBreaker_.recordSuccess();
             returnConnection(stub);
             return CKR_OK;
         }
         
         // Check if we should retry
         if (!isRetryable(status) || attempt == maxRetries) {
+            circuitBreaker_.recordFailure();
             returnConnection(stub);
-            // Map gRPC error to PKCS#11 error (will implement in error_mapping.cpp)
-            return CKR_FUNCTION_FAILED; // Placeholder
+            // Map gRPC error to PKCS#11 error with detailed error information
+            return mapGrpcDetailedError(status);
         }
         
         // Exponential backoff
@@ -216,6 +223,7 @@ CK_RV GrpcConnectionPool::executeRpc(
         std::this_thread::sleep_for(backoff);
     }
     
+    circuitBreaker_.recordFailure();
     returnConnection(stub);
     return CKR_FUNCTION_FAILED;
 }

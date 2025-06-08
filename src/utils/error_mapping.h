@@ -45,6 +45,20 @@ std::string getErrorMessage(CK_RV errorCode);
  */
 bool isRetriableError(CK_RV errorCode);
 
+/**
+ * @brief Map Supacrypt protobuf error code enum to PKCS#11 error code
+ * @param errorCode Supacrypt error code from protobuf enum
+ * @return CK_RV PKCS#11 error code
+ */
+CK_RV mapErrorCodeToPkcs11(int32_t errorCode);
+
+/**
+ * @brief Map gRPC status with detailed error information to PKCS#11 error code
+ * @param status gRPC status with potential error details
+ * @return CK_RV PKCS#11 error code
+ */
+CK_RV mapGrpcDetailedError(const grpc::Status& status);
+
 } // namespace pkcs11
 } // namespace supacrypt
 

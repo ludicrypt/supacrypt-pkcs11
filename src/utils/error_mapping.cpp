@@ -4,6 +4,8 @@
  */
 
 #include "error_mapping.h"
+#include "logging.h"
+#include "supacrypt.grpc.pb.h"
 #include <grpcpp/grpcpp.h>
 #include <unordered_map>
 #include <string>
@@ -255,6 +257,95 @@ bool isRetriableError(CK_RV errorCode) {
         default:
             return false;
     }
+}
+
+CK_RV mapErrorCodeToPkcs11(int32_t errorCode) {
+    // This is a wrapper around mapSupacryptError for consistency
+    return mapSupacryptError(errorCode);
+}
+
+CK_RV mapGrpcDetailedError(const grpc::Status& status) {
+    if (status.ok()) {
+        return CKR_OK;
+    }
+    
+    // Try to extract ErrorDetails from status details
+    std::string detailsStr = status.error_details();
+    
+    if (!detailsStr.empty()) {
+        try {
+            supacrypt::v1::ErrorDetails errorDetails;
+            if (errorDetails.ParseFromString(detailsStr)) {
+                // Log detailed error for debugging
+                logError("Backend error: " + errorDetails.message() + 
+                        " (code: " + std::to_string(static_cast<int>(errorDetails.code())) + 
+                        ", details: " + errorDetails.details() + ")");
+                
+                // Map specific error codes to PKCS#11 errors
+                switch (errorDetails.code()) {
+                    case supacrypt::v1::ErrorCode::ERROR_CODE_SUCCESS:
+                        return CKR_OK;
+                        
+                    case supacrypt::v1::ErrorCode::ERROR_CODE_KEY_NOT_FOUND:
+                        return CKR_KEY_HANDLE_INVALID;
+                        
+                    case supacrypt::v1::ErrorCode::ERROR_CODE_INVALID_REQUEST:
+                        return CKR_ARGUMENTS_BAD;
+                        
+                    case supacrypt::v1::ErrorCode::ERROR_CODE_UNSUPPORTED_ALGORITHM:
+                        return CKR_MECHANISM_INVALID;
+                        
+                    case supacrypt::v1::ErrorCode::ERROR_CODE_KEY_SIZE_NOT_SUPPORTED:
+                        return CKR_KEY_SIZE_RANGE;
+                        
+                    case supacrypt::v1::ErrorCode::ERROR_CODE_INVALID_SIGNATURE:
+                        return CKR_SIGNATURE_INVALID;
+                        
+                    case supacrypt::v1::ErrorCode::ERROR_CODE_AUTHENTICATION_FAILED:
+                        return CKR_USER_NOT_LOGGED_IN;
+                        
+                    case supacrypt::v1::ErrorCode::ERROR_CODE_AUTHORIZATION_FAILED:
+                        return CKR_KEY_FUNCTION_NOT_PERMITTED;
+                        
+                    case supacrypt::v1::ErrorCode::ERROR_CODE_AZURE_KV_ERROR:
+                        logWarning("Azure Key Vault error: " + errorDetails.message());
+                        return CKR_DEVICE_ERROR;
+                        
+                    case supacrypt::v1::ErrorCode::ERROR_CODE_NETWORK_ERROR:
+                        logWarning("Network error: " + errorDetails.message());
+                        return CKR_DEVICE_ERROR;
+                        
+                    case supacrypt::v1::ErrorCode::ERROR_CODE_INTERNAL_ERROR:
+                        logError("Backend internal error: " + errorDetails.message());
+                        return CKR_DEVICE_ERROR;
+                        
+                    case supacrypt::v1::ErrorCode::ERROR_CODE_CURVE_NOT_SUPPORTED:
+                    case supacrypt::v1::ErrorCode::ERROR_CODE_HASH_NOT_SUPPORTED:
+                    case supacrypt::v1::ErrorCode::ERROR_CODE_PADDING_NOT_SUPPORTED:
+                        return CKR_MECHANISM_PARAM_INVALID;
+                        
+                    case supacrypt::v1::ErrorCode::ERROR_CODE_DECRYPTION_FAILED:
+                        return CKR_ENCRYPTED_DATA_INVALID;
+                        
+                    case supacrypt::v1::ErrorCode::ERROR_CODE_ENCRYPTION_FAILED:
+                        return CKR_DATA_INVALID;
+                        
+                    default:
+                        logError("Unknown backend error code: " + 
+                                std::to_string(static_cast<int>(errorDetails.code())));
+                        return CKR_GENERAL_ERROR;
+                }
+            }
+        } catch (const std::exception& e) {
+            logError("Failed to parse error details: " + std::string(e.what()));
+        }
+    }
+    
+    // Fall back to basic gRPC status code mapping
+    logError("gRPC error: " + status.error_message() + 
+             " (code: " + std::to_string(status.error_code()) + ")");
+    
+    return mapGrpcError(status);
 }
 
 } // namespace pkcs11

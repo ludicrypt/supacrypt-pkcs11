@@ -12,8 +12,8 @@
 #include <thread>
 #include <iomanip>
 
-// Include generated protobuf headers (these would be generated from supacrypt.proto)
-// For now we'll use forward declarations and implement the stub interface
+// Include generated protobuf headers
+#include "supacrypt.grpc.pb.h"
 
 namespace supacrypt {
 namespace pkcs11 {
@@ -56,8 +56,8 @@ CK_RV GrpcConnectionPool::initialize(const supacrypt_config_t* config) {
             return CKR_DEVICE_ERROR;
         }
 
-        // For now, we'll comment out the stub creation since we don't have the generated code
-        // conn.stub = supacrypt::v1::SupacryptService::NewStub(conn.channel);
+        // Create the gRPC stub using generated code
+        conn.stub = supacrypt::v1::SupacryptService::NewStub(conn.channel);
         
         conn.lastUsed = std::chrono::steady_clock::now();
         connections_.push_back(std::move(conn));
@@ -77,7 +77,7 @@ void GrpcConnectionPool::shutdown() {
     initialized_ = false;
 }
 
-std::shared_ptr<supacrypt::v1::SupacryptService::Stub> GrpcConnectionPool::getConnection() {
+supacrypt::v1::SupacryptService::Stub* GrpcConnectionPool::borrowConnection() {
     if (!initialized_) {
         return nullptr;
     }
@@ -89,7 +89,7 @@ std::shared_ptr<supacrypt::v1::SupacryptService::Stub> GrpcConnectionPool::getCo
         if (!conn.inUse && conn.stub) {
             conn.inUse = true;
             conn.lastUsed = std::chrono::steady_clock::now();
-            return conn.stub.get()->shared_from_this(); // This won't work without proper shared_ptr management
+            return conn.stub.get();
         }
     }
 
@@ -98,7 +98,7 @@ std::shared_ptr<supacrypt::v1::SupacryptService::Stub> GrpcConnectionPool::getCo
     return nullptr;
 }
 
-void GrpcConnectionPool::returnConnection(std::shared_ptr<supacrypt::v1::SupacryptService::Stub> stub) {
+void GrpcConnectionPool::returnConnection(supacrypt::v1::SupacryptService::Stub* stub) {
     if (!initialized_ || !stub) {
         return;
     }
@@ -107,7 +107,7 @@ void GrpcConnectionPool::returnConnection(std::shared_ptr<supacrypt::v1::Supacry
 
     // Find the connection and mark it as available
     for (auto& conn : connections_) {
-        if (conn.stub.get() == stub.get()) {
+        if (conn.stub.get() == stub) {
             conn.inUse = false;
             conn.lastUsed = std::chrono::steady_clock::now();
             break;

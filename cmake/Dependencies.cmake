@@ -7,8 +7,8 @@ find_package(Threads REQUIRED)
 # OpenSSL (for local crypto operations)
 find_package(OpenSSL REQUIRED)
 
-# Protobuf and gRPC (optional for basic build)
-option(ENABLE_GRPC "Enable gRPC support" OFF)
+# Protobuf and gRPC (required for cryptographic operations)
+option(ENABLE_GRPC "Enable gRPC support" ON)
 if(ENABLE_GRPC)
     FetchContent_Declare(
         gRPC
@@ -21,6 +21,13 @@ if(ENABLE_GRPC)
     
     # Find generated protobuf files
     find_package(Protobuf REQUIRED)
+    
+    # Link gRPC libraries to main target
+    target_link_libraries(supacrypt-pkcs11 PRIVATE
+        gRPC::grpc++
+        gRPC::grpc++_reflection
+        protobuf::libprotobuf
+    )
 endif()
 
 # Google Test (for testing)
