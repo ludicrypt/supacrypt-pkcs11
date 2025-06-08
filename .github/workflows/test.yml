@@ -1,0 +1,477 @@
+name: Comprehensive Test Suite
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    - cron: '0 2 * * 0'  # Weekly run on Sunday at 2 AM
+
+env:
+  CMAKE_BUILD_TYPE: Release
+  CTEST_OUTPUT_ON_FAILURE: 1
+
+jobs:
+  # ================================
+  # Unit Tests
+  # ================================
+  unit-tests:
+    name: Unit Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022, macos-13]
+        include:
+          - os: ubuntu-22.04
+            cmake_extra: "-DENABLE_COVERAGE=ON"
+          - os: windows-2022
+            cmake_extra: "-DCMAKE_TOOLCHAIN_FILE=vcpkg/scripts/buildsystems/vcpkg.cmake"
+          - os: macos-13
+            cmake_extra: "-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64"
+
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install Dependencies (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          libssl-dev \
+          pkg-config \
+          lcov \
+          valgrind \
+          clang-15 \
+          llvm-15
+        
+        # Install newer CMake
+        pip install cmake==3.27.*
+    
+    - name: Install Dependencies (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        choco install cmake ninja
+        
+        # Setup vcpkg
+        git clone https://github.com/Microsoft/vcpkg.git
+        cd vcpkg
+        .\bootstrap-vcpkg.bat
+        .\vcpkg integrate install
+        .\vcpkg install openssl:x64-windows protobuf:x64-windows grpc:x64-windows
+    
+    - name: Install Dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install cmake ninja openssl pkg-config lcov protobuf grpc
+        
+        # Add OpenSSL to path
+        echo "PKG_CONFIG_PATH=/opt/homebrew/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
+        echo "OPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl" >> $GITHUB_ENV
+    
+    - name: Configure CMake
+      run: |
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
+          -DBUILD_TESTING=ON \
+          -DBUILD_BENCHMARKS=OFF \
+          -DENABLE_SANITIZERS=ON \
+          ${{ matrix.cmake_extra }}
+    
+    - name: Build
+      run: cmake --build build --parallel $(nproc 2>/dev/null || echo 4)
+    
+    - name: Run Unit Tests
+      run: |
+        cd build
+        ctest --output-on-failure --parallel $(nproc 2>/dev/null || echo 4) -R "unit\."
+    
+    - name: Generate Coverage Report (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        cd build
+        make coverage-unit
+    
+    - name: Upload Coverage (Linux)
+      if: runner.os == 'Linux'
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./build/coverage-unit.filtered.info
+        flags: unit-tests
+        name: unit-tests-${{ matrix.os }}
+    
+    - name: Upload Test Results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: unit-test-results-${{ matrix.os }}
+        path: |
+          build/Testing/
+          build/coverage-unit-report/
+        retention-days: 7
+
+  # ================================
+  # Integration Tests
+  # ================================
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-22.04
+    
+    services:
+      backend:
+        image: supacrypt/backend:test
+        ports:
+          - 5001:5000
+        env:
+          ASPNETCORE_ENVIRONMENT: Development
+          Security__Mtls__Enabled: false
+          AzureKeyVault__UseMockProvider: true
+        options: >-
+          --health-cmd "curl -f http://localhost:5000/health || exit 1"
+          --health-interval 30s
+          --health-timeout 10s
+          --health-retries 5
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          libssl-dev \
+          pkg-config \
+          curl
+    
+    - name: Wait for Backend
+      run: |
+        for i in {1..30}; do
+          if curl -f http://localhost:5001/health; then
+            echo "Backend is ready"
+            break
+          fi
+          echo "Waiting for backend... ($i/30)"
+          sleep 2
+        done
+    
+    - name: Configure CMake
+      run: |
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
+          -DBUILD_TESTING=ON \
+          -DBUILD_BENCHMARKS=OFF
+    
+    - name: Build
+      run: cmake --build build --parallel $(nproc)
+    
+    - name: Run Integration Tests
+      env:
+        SUPACRYPT_USE_REAL_BACKEND: 1
+        SUPACRYPT_BACKEND_ENDPOINT: localhost:5001
+      run: |
+        cd build
+        ctest --output-on-failure --parallel $(nproc) -R "integration\."
+    
+    - name: Upload Test Results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: integration-test-results
+        path: build/Testing/
+        retention-days: 7
+
+  # ================================
+  # Conformance Tests
+  # ================================
+  conformance-tests:
+    name: PKCS#11 Conformance Tests
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          libssl-dev \
+          pkg-config
+    
+    - name: Configure CMake
+      run: |
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
+          -DBUILD_TESTING=ON \
+          -DBUILD_CONFORMANCE_TESTS=ON
+    
+    - name: Build
+      run: cmake --build build --parallel $(nproc)
+    
+    - name: Run Conformance Tests
+      run: |
+        cd build
+        ctest --output-on-failure -R "conformance\."
+    
+    - name: Upload Test Results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: conformance-test-results
+        path: build/Testing/
+        retention-days: 7
+
+  # ================================
+  # Platform-Specific Tests
+  # ================================
+  platform-tests:
+    name: Platform Tests (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, windows-2022, macos-13]
+    
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install Dependencies (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          libssl-dev \
+          pkg-config \
+          p11-kit-modules
+    
+    - name: Install Dependencies (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        choco install cmake ninja
+        
+        # Setup vcpkg
+        git clone https://github.com/Microsoft/vcpkg.git
+        cd vcpkg
+        .\bootstrap-vcpkg.bat
+        .\vcpkg integrate install
+        .\vcpkg install openssl:x64-windows
+    
+    - name: Install Dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install cmake ninja openssl pkg-config
+    
+    - name: Configure CMake
+      run: |
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
+          -DBUILD_TESTING=ON
+    
+    - name: Build
+      run: cmake --build build --parallel $(nproc 2>/dev/null || echo 4)
+    
+    - name: Run Platform Tests
+      run: |
+        cd build
+        ctest --output-on-failure -R "platform\."
+
+  # ================================
+  # Performance Benchmarks
+  # ================================
+  benchmarks:
+    name: Performance Benchmarks
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          libssl-dev \
+          pkg-config
+    
+    - name: Configure CMake
+      run: |
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_TESTING=ON \
+          -DBUILD_BENCHMARKS=ON
+    
+    - name: Build
+      run: cmake --build build --parallel $(nproc)
+    
+    - name: Run Benchmarks
+      run: |
+        cd build
+        ./tests/supacrypt-pkcs11-benchmarks \
+          --benchmark_format=json \
+          --benchmark_out=benchmark_results.json \
+          --benchmark_repetitions=3 \
+          --benchmark_display_aggregates_only=true
+    
+    - name: Upload Benchmark Results
+      uses: actions/upload-artifact@v3
+      with:
+        name: benchmark-results
+        path: build/benchmark_results.json
+        retention-days: 30
+
+  # ================================
+  # Security Tests
+  # ================================
+  security-tests:
+    name: Security Tests
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          libssl-dev \
+          pkg-config \
+          clang-15 \
+          llvm-15 \
+          valgrind
+    
+    - name: Configure CMake with Sanitizers
+      run: |
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DBUILD_TESTING=ON \
+          -DBUILD_SECURITY_TESTS=ON \
+          -DENABLE_SANITIZERS=ON \
+          -DCMAKE_C_COMPILER=clang-15 \
+          -DCMAKE_CXX_COMPILER=clang++-15
+    
+    - name: Build
+      run: cmake --build build --parallel $(nproc)
+    
+    - name: Run Memory Safety Tests
+      run: |
+        cd build
+        ctest --output-on-failure -R "security\."
+    
+    - name: Run Valgrind Tests
+      run: |
+        cd build
+        ctest --output-on-failure -R "unit\." -T memcheck
+    
+    - name: Build Fuzzing Targets
+      if: false  # Disable fuzzing in CI for now
+      run: |
+        cmake -B fuzz-build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DBUILD_SECURITY_TESTS=ON \
+          -DCMAKE_C_COMPILER=clang-15 \
+          -DCMAKE_CXX_COMPILER=clang++-15 \
+          -DCMAKE_C_FLAGS="-fsanitize=fuzzer,address" \
+          -DCMAKE_CXX_FLAGS="-fsanitize=fuzzer,address"
+        
+        cmake --build fuzz-build --target fuzz-pkcs11
+    
+    - name: Run Short Fuzzing Session
+      if: false  # Disable fuzzing in CI for now
+      run: |
+        cd fuzz-build
+        timeout 300 ./fuzz-pkcs11 -max_total_time=300 || true
+    
+    - name: Upload Security Test Results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-test-results
+        path: |
+          build/Testing/
+          fuzz-build/crash-*
+          fuzz-build/leak-*
+        retention-days: 7
+
+  # ================================
+  # Test Summary
+  # ================================
+  test-summary:
+    name: Test Summary
+    needs: [unit-tests, integration-tests, conformance-tests, platform-tests, benchmarks, security-tests]
+    runs-on: ubuntu-22.04
+    if: always()
+    
+    steps:
+    - name: Download All Test Results
+      uses: actions/download-artifact@v3
+    
+    - name: Generate Test Report
+      run: |
+        echo "# Test Summary" > test_summary.md
+        echo "" >> test_summary.md
+        
+        echo "## Test Results" >> test_summary.md
+        echo "- Unit Tests: ${{ needs.unit-tests.result }}" >> test_summary.md
+        echo "- Integration Tests: ${{ needs.integration-tests.result }}" >> test_summary.md
+        echo "- Conformance Tests: ${{ needs.conformance-tests.result }}" >> test_summary.md
+        echo "- Platform Tests: ${{ needs.platform-tests.result }}" >> test_summary.md
+        echo "- Benchmarks: ${{ needs.benchmarks.result }}" >> test_summary.md
+        echo "- Security Tests: ${{ needs.security-tests.result }}" >> test_summary.md
+        
+        echo "" >> test_summary.md
+        echo "## Coverage Information" >> test_summary.md
+        if [ -f unit-test-results-ubuntu-22.04/coverage-unit-report/index.html ]; then
+          echo "Coverage report generated and uploaded to Codecov" >> test_summary.md
+        fi
+        
+        echo "" >> test_summary.md
+        echo "## Artifacts Generated" >> test_summary.md
+        ls -la . >> test_summary.md
+    
+    - name: Upload Test Summary
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-summary
+        path: test_summary.md
+        retention-days: 30

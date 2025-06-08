@@ -41,6 +41,18 @@ if(BUILD_TESTING)
     FetchContent_MakeAvailable(googletest)
 endif()
 
+# Google Benchmark (for performance testing)
+if(BUILD_BENCHMARKS)
+    FetchContent_Declare(
+        benchmark
+        GIT_REPOSITORY https://github.com/google/benchmark.git
+        GIT_TAG        v1.8.3
+    )
+    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(benchmark)
+endif()
+
 # OpenTelemetry C++ SDK (optional for basic build)
 option(ENABLE_OBSERVABILITY "Enable OpenTelemetry observability" OFF)
 if(ENABLE_OBSERVABILITY)
